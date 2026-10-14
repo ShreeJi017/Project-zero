@@ -32,10 +32,13 @@ jobs:
           chmod +x gradlew
           ./gradlew testDebugUnitTest assembleDebug --no-daemon --console=plain
 
+      - name: Name APK zerogravity.apk
+        run: cp app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/debug/zerogravity.apk
+
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: ZeroGravity-debug-APK
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: zerogravity.apk
+          path: app/build/outputs/apk/debug/zerogravity.apk
           if-no-files-found: error
           retention-days: 14
