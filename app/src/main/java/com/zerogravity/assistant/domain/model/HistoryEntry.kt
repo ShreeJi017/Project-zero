@@ -4,4 +4,5 @@ data class HistoryEntry(
     val id: String,
     val title: String,
     val updatedAtEpochMillis: Long,
+    val preview: String = "",
 )

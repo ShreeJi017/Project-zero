@@ -220,6 +220,7 @@ fun ZeroGravityApp(container: AppContainer) {
                     state = uiState,
                     onNavigate = ::navigateTo,
                     onCommand = ::submitCommand,
+                    onNewChat = { assistantViewModel.newConversation(); scope.launch { snackbarHostState.showSnackbar("Started a new conversation.") } },
                     onStartListening = ::startListening,
                     onStopListening = assistantViewModel::stopVoice,
                     onNotice = { message ->
@@ -353,6 +354,24 @@ fun ZeroGravityApp(container: AppContainer) {
             composable(Destination.HISTORY.route) {
                 HistoryScreen(
                     repository = container.historyRepository,
+                    onOpenConversation = { conversationId ->
+                        scope.launch {
+                            when (val opened = assistantViewModel.openConversation(conversationId)) {
+                                is ServiceResult.Success -> navigateTo(Destination.HOME.route)
+                                is ServiceResult.Failure -> snackbarHostState.showSnackbar(
+                                    if (opened.reason == FailureReason.NOT_AVAILABLE) "That conversation is no longer available." else "The conversation could not be opened.",
+                                )
+                            }
+                        }
+                    },
+                    onClearHistory = {
+                        scope.launch {
+                            when (assistantViewModel.clearHistory()) {
+                                is ServiceResult.Success -> snackbarHostState.showSnackbar("Local conversation history cleared.")
+                                is ServiceResult.Failure -> snackbarHostState.showSnackbar("Local history could not be cleared.")
+                            }
+                        }
+                    },
                     onSwipeLeft = { navigateTo(Destination.HOME.route) },
                     onSwipeRight = { navigateTo(Destination.PERSONALISATION.route) },
                 )

@@ -30,7 +30,9 @@ class ZeroGravityNavigationTest {
         composeRule.onNodeWithText("Shape the way Zero feels to you.").assertIsDisplayed()
 
         composeRule.onNodeWithContentDescription("History navigation").performClick()
-        composeRule.onNodeWithText("Conversation history is planned").assertIsDisplayed()
+        composeRule.onNodeWithText("A fresh orbit").assertIsDisplayed()
+        composeRule.onNodeWithText("Search history").assertIsDisplayed()
+        composeRule.onNodeWithText("Clear history").assertIsDisplayed()
 
         composeRule.onNodeWithContentDescription("Home navigation").performClick()
         composeRule.onNodeWithText("Your space,")

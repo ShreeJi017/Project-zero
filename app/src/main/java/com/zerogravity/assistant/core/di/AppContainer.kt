@@ -4,6 +4,7 @@ import android.content.Context
 import com.zerogravity.assistant.core.logging.AndroidAppLogger
 import com.zerogravity.assistant.core.permission.AndroidPermissionManager
 import com.zerogravity.assistant.data.preferences.DataStoreSettingsRepository
+import com.zerogravity.assistant.data.history.AndroidHistoryRepository
 import com.zerogravity.assistant.data.security.AndroidAssistantApiConfigurationRepository
 import com.zerogravity.assistant.domain.command.DeterministicCommandRouter
 import com.zerogravity.assistant.domain.model.AppPermission
@@ -27,9 +28,10 @@ import com.zerogravity.assistant.domain.port.VoicePackManager
 
 class AppContainer(
     context: Context,
-    val historyRepository: HistoryRepository? = null,
+    historyRepository: HistoryRepository? = null,
 ) {
     private val appContext = context.applicationContext
+    val historyRepository: HistoryRepository = historyRepository ?: AndroidHistoryRepository(appContext)
     private val logger = AndroidAppLogger()
     val permissionManager = AndroidPermissionManager(appContext)
     private val reminderScheduler = AndroidReminderScheduler(appContext)

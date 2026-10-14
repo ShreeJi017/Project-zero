@@ -72,6 +72,7 @@ fun AssistantScreen(
     onNavigate: (String) -> Unit,
     onNotice: (String) -> Unit,
     onCommand: (String) -> Unit,
+    onNewChat: () -> Unit,
     onStartListening: (Boolean) -> Unit,
     onStopListening: () -> Unit,
 ) {
@@ -158,6 +159,14 @@ fun AssistantScreen(
             busy = state.chatBusy,
             modifier = Modifier.fillMaxWidth(),
         )
+        if (state.historySaveError) {
+            Text(
+                text = "This conversation could not be saved locally and may be lost when the app closes.",
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
         Text(
             text = if (state.apiConfiguration.isConfigured) {
                 "AI provider configured. Messages and recent conversation turns are sent to its HTTPS endpoint when you ask a free-form question."
@@ -291,12 +300,17 @@ fun AssistantScreen(
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             QuickLink(
+                label = "New chat",
+                modifier = Modifier.weight(1f),
+                onClick = { prompt = ""; onNewChat() },
+            )
+            QuickLink(
                 label = "Personalise",
                 modifier = Modifier.weight(1f),
                 onClick = { onNavigate("personalisation") },
             )
             QuickLink(
-                label = "Explore settings",
+                label = "Settings",
                 modifier = Modifier.weight(1f),
                 onClick = { onNavigate("settings") },
             )

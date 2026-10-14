@@ -1,6 +1,6 @@
 # ZeroGravity
 
-ZeroGravity is a native Android assistant built with Kotlin and Jetpack Compose. Deterministic local commands, Android device actions, on-device reminders, and user-defined safe shortcuts work without a network connection or language model. Optional free-form chat uses a user-configured OpenAI-compatible HTTPS provider; durable chat history and long-term assistant memory remain deferred.
+ZeroGravity is a native Android assistant built with Kotlin and Jetpack Compose. Deterministic local commands, Android device actions, on-device reminders, and user-defined safe shortcuts work without a network connection or language model. Optional free-form chat uses a user-configured OpenAI-compatible HTTPS provider; conversation transcripts are stored in app-private SQLite (not separately encrypted); long-term assistant memory remains out of scope.
 
 ## Build and test
 
@@ -22,9 +22,9 @@ The last command requires a running Android emulator or connected test device.
 - Compose navigation provides Home, Settings, Personalisation, and History. Bottom navigation is always visible; Home's orbital canvas and page headings support horizontal navigation without attaching gestures to text entry or system edges. Navigation state is saved by the Navigation Compose controller.
 - The Home orb is drawn and briefly animated using Canvas. Text and manually activated voice input use the same local command processor. A visible state panel reports listening, processing, recognized text, speech, no-speech, and error states.
 - Free-form text chat can use an OpenAI-compatible `/chat/completions` endpoint configured by the user. Without a configured provider, unknown requests stay local and explain that online chat is unavailable. Device commands continue to use the deterministic local router.
-- Provider endpoints and model names are stored in app-private preferences. API keys are encrypted with AES-GCM using an Android Keystore key and are never shown after save. Only when the user sends a free-form question are that message and up to 20 recent in-memory conversation messages sent over HTTPS; local device commands do not use the AI provider. Conversation messages are not persisted after the app process ends. The provider's own data practices apply.
+- Provider endpoints and model names are stored in app-private preferences. API keys are encrypted with AES-GCM using an Android Keystore key and are never shown after save. Only when the user sends a free-form question are that message and up to 20 recent in-memory conversation messages sent over HTTPS; local device commands do not use the AI provider. Conversation titles and full user/assistant transcripts are stored in app-private SQLite; Android system backup settings may apply. Search matches message text, saved conversations can be reopened or cleared, and no app-level cloud sync is built in. When online chat is configured, the current conversation context is sent to that provider as described below.
 - Appearance, voice, battery-warning, assistant-name, and response-style preferences are typed and stored atomically by Preferences DataStore. `SYSTEM`, `LIGHT`, and `DARK` appearance modes are supported. Wake-word/background listening and unattended automation are not active options.
-- History consumes the `HistoryRepository` interface. No history repository is registered in this batch, so the app states that conversation transcripts are not being saved; no long-term memory or archive is implemented.
+- History uses an app-private SQLite repository. It stores user and assistant messages, searches titles and transcript text, reopens a selected conversation, and offers an explicitly confirmed clear-all action. It does not provide cloud sync or long-term assistant memory.
 - Settings sections distinguish installed OS voices from missing offline voices. Wake-word detection and arbitrary automation are not advertised as active features.
 
 ## Architecture and integration
@@ -37,7 +37,7 @@ The last command requires a running Android emulator or connected test device.
 - `platform/voice` owns the single Android on-device speech recognizer, the system TextToSpeech engine, and the process-lifetime battery warning monitor. Both speech adapters are registered once in `AppContainer`.
 - `domain.port.WeatherProvider` and `CalendarProvider` are optional integration points. No weather provider is configured and no calendar provider is registered. Live weather is not available; it requires internet access and a configured provider. Calendar access is not requested unless a future provider is deliberately integrated.
 - Spoken notifications and WhatsApp message access are unavailable; no notification-listener service, notification-access permission, WhatsApp integration, or message-reading path is present. Settings identifies these limits. Calls and SMS only hand off to the system confirmation UI.
-- `core/di` constructs application dependencies directly. Register the future history repository here and connect speech, local-model, weather, and calendar providers through the existing domain contracts.
+- `core/di` constructs application dependencies directly. The history repository is registered here. Speech, local-model, weather, and calendar providers remain explicit integration points and are not reported as available until implemented.
 - `ui` owns lifecycle-aware settings state, navigation, loading/error feedback, and the presentation layer.
 
 Unconfigured cloud AI, shipped credentials, a PC bridge, code/APK generation, smart-home, and watch integrations remain out of scope.

@@ -23,6 +23,7 @@ import com.zerogravity.assistant.domain.port.AssistantChatService
 import com.zerogravity.assistant.domain.port.LocalCommandProcessor
 import com.zerogravity.assistant.domain.port.SpeechToTextEngine
 import com.zerogravity.assistant.domain.port.SettingsRepository
+import com.zerogravity.assistant.domain.port.HistoryRepository
 import com.zerogravity.assistant.domain.port.TextToSpeechEngine
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -49,6 +50,7 @@ data class AssistantUiState(
     val apiConfiguration: AssistantApiConfiguration = AssistantApiConfiguration(),
     val chatMessages: List<ChatMessage> = emptyList(),
     val chatBusy: Boolean = false,
+    val historySaveError: Boolean = false,
 )
 
 enum class AssistantActivity {
@@ -66,12 +68,14 @@ class AssistantViewModel(
     private val textToSpeech: TextToSpeechEngine,
     private val apiConfigurationRepository: AssistantApiConfigurationRepository,
     private val assistantChatService: AssistantChatService,
+    private val historyRepository: HistoryRepository,
     private val logger: AppLogger,
 ) : ViewModel() {
     private val commandParser = CommandParser()
     private val capabilities = MutableStateFlow(capabilityRegistry.all())
     private val interaction = MutableStateFlow(VoiceInteraction())
     private val chatSession = MutableStateFlow(ChatSession())
+    private val activeConversationId = MutableStateFlow(UUID.randomUUID().toString())
 
     val uiState = combine(
         settingsRepository.settings,
@@ -102,7 +106,11 @@ class AssistantViewModel(
             state.copy(apiConfiguration = configuration)
         }
         .combine(chatSession) { state, session ->
-            state.copy(chatMessages = session.messages, chatBusy = session.busy)
+            state.copy(
+                chatMessages = session.messages,
+                chatBusy = session.busy,
+                historySaveError = session.historySaveError,
+            )
         }
         .catch { throwable ->
             if (throwable is CancellationException) throw throwable
@@ -135,21 +143,16 @@ class AssistantViewModel(
         viewModelScope.launch {
             if (chatSession.value.busy) return@launch
             if (interaction.value.sessionActive) {
-                voiceJob?.cancel()
-                speechToText.cancel()
-                textToSpeech.stop()
+                voiceJob?.cancel(); speechToText.cancel(); textToSpeech.stop()
                 interaction.value = interaction.value.copy(sessionActive = false, speaking = false)
             }
-            val userMessage = ChatMessage(
-                id = UUID.randomUUID().toString(),
-                role = ChatRole.USER,
-                content = command,
-            )
+            val conversationId = activeConversationId.value
+            val userMessage = ChatMessage(UUID.randomUUID().toString(), ChatRole.USER, command)
             val earlierMessages = chatSession.value.messages
-            chatSession.value = ChatSession(
-                messages = (earlierMessages + userMessage).takeLast(MAX_VISIBLE_CHAT_MESSAGES),
-                busy = true,
-            )
+            val conversationTitle = earlierMessages.firstOrNull { it.role == ChatRole.USER }?.content ?: command
+            chatSession.value = ChatSession(messages = (earlierMessages + userMessage).takeLast(MAX_VISIBLE_CHAT_MESSAGES), busy = true)
+            val userSaved = saveHistoryMessage(conversationId, conversationTitle, userMessage)
+            if (activeConversationId.value == conversationId && !userSaved) chatSession.value = chatSession.value.copy(historySaveError = true)
             val result = try {
                 val parsedCommand = commandParser.parse(command)
                 val configuration = apiConfigurationRepository.configuration.first()
@@ -157,50 +160,73 @@ class AssistantViewModel(
                     assistantChatService.respond(earlierMessages + userMessage)
                 } else {
                     commandProcessor.process(command).let { localResult ->
-                        if (parsedCommand == ParsedCommand.Unknown &&
-                            localResult is ServiceResult.Success &&
-                            localResult.value.startsWith("I don't recognize")
-                        ) {
-                            ServiceResult.Success(
-                                "${localResult.value}\n\nOnline chat is not configured. Add an HTTPS provider and API key in Settings; no message was sent.",
-                            )
-                        } else {
-                            localResult
-                        }
+                        if (parsedCommand == ParsedCommand.Unknown && localResult is ServiceResult.Success && localResult.value.startsWith("I don't recognize")) {
+                            ServiceResult.Success("${localResult.value}\n\nOnline chat is not configured. Add an HTTPS provider and API key in Settings; no message was sent.")
+                        } else localResult
                     }
                 }
             } catch (exception: CancellationException) {
-                chatSession.value = chatSession.value.copy(busy = false)
+                if (activeConversationId.value == conversationId) chatSession.value = chatSession.value.copy(busy = false)
                 throw exception
             } catch (exception: Exception) {
                 ServiceResult.Failure(FailureReason.IO_ERROR, exception)
             }
-            onResult(result)
             val reply = when (result) {
                 is ServiceResult.Success -> result.value
                 is ServiceResult.Failure -> result.reason.chatMessage()
             }
+            val assistantMessage = ChatMessage(UUID.randomUUID().toString(), ChatRole.ASSISTANT, reply)
+            val replySaved = saveHistoryMessage(conversationId, conversationTitle, assistantMessage)
+            if (activeConversationId.value != conversationId) return@launch
+            onResult(result)
             chatSession.value = chatSession.value.copy(
-                messages = (chatSession.value.messages + ChatMessage(
-                    id = UUID.randomUUID().toString(),
-                    role = ChatRole.ASSISTANT,
-                    content = reply,
-                )).takeLast(MAX_VISIBLE_CHAT_MESSAGES),
+                messages = (chatSession.value.messages + assistantMessage).takeLast(MAX_VISIBLE_CHAT_MESSAGES),
                 busy = false,
+                historySaveError = chatSession.value.historySaveError || !replySaved,
             )
             interaction.value = interaction.value.copy(responseText = reply)
             val settings = uiState.value.settings
-            if (result is ServiceResult.Success &&
-                settings?.voiceResponsesEnabled == true &&
-                !opensExternalActivity(command)
-            ) {
-                speak(reply, settings)
-            }
-            if (result is ServiceResult.Failure) {
-                result.cause?.let { logger.error("Assistant request did not complete", it) }
-            }
+            if (result is ServiceResult.Success && settings?.voiceResponsesEnabled == true && !opensExternalActivity(command)) speak(reply, settings)
+            if (result is ServiceResult.Failure) result.cause?.let { logger.error("Assistant request did not complete", it) }
         }
     }
+
+    fun newConversation() {
+        stopVoice()
+        activeConversationId.value = UUID.randomUUID().toString()
+        chatSession.value = ChatSession()
+        interaction.value = interaction.value.copy(responseText = "", sessionActive = false, speaking = false, voiceOutputError = false)
+    }
+
+    suspend fun openConversation(conversationId: String): ServiceResult<Unit> {
+        if (conversationId.isBlank()) return ServiceResult.Failure(FailureReason.INVALID_INPUT)
+        return try {
+            val messages = historyRepository.messages(conversationId)
+            if (messages.isEmpty()) return ServiceResult.Failure(FailureReason.NOT_AVAILABLE)
+            stopVoice()
+            activeConversationId.value = conversationId
+            chatSession.value = ChatSession(messages = messages.takeLast(MAX_VISIBLE_CHAT_MESSAGES))
+            interaction.value = interaction.value.copy(responseText = messages.last().content, sessionActive = false, speaking = false, voiceOutputError = false)
+            ServiceResult.Success(Unit)
+        } catch (exception: CancellationException) { throw exception }
+        catch (exception: Exception) { ServiceResult.Failure(FailureReason.IO_ERROR, exception) }
+    }
+
+    suspend fun clearHistory(): ServiceResult<Unit> {
+        val result = try { historyRepository.clear() }
+        catch (exception: CancellationException) { throw exception }
+        catch (exception: Exception) { ServiceResult.Failure(FailureReason.IO_ERROR, exception) }
+        if (result is ServiceResult.Success) newConversation()
+        return result
+    }
+
+    private suspend fun saveHistoryMessage(conversationId: String, title: String, message: ChatMessage): Boolean = try {
+        when (val saved = historyRepository.saveMessage(conversationId, title, message)) {
+            is ServiceResult.Success -> true
+            is ServiceResult.Failure -> { saved.cause?.let { logger.error("Local conversation history could not be saved", it) }; false }
+        }
+    } catch (exception: CancellationException) { throw exception }
+    catch (exception: Exception) { logger.error("Local conversation history could not be saved", exception); false }
 
     fun startListening(
         continuous: Boolean,
@@ -225,25 +251,43 @@ class AssistantViewModel(
                             interaction.value = interaction.value.copy(
                                 responseText = "Heard: ${recognition.value}",
                             )
-                            val result = commandProcessor.process(recognition.value)
+                            val conversationId = activeConversationId.value
+                            val earlierMessages = chatSession.value.messages
+                            val conversationTitle = earlierMessages.firstOrNull { it.role == ChatRole.USER }?.content ?: recognition.value
+                            val userMessage = ChatMessage(UUID.randomUUID().toString(), ChatRole.USER, recognition.value)
+                            val userSaved = saveHistoryMessage(conversationId, conversationTitle, userMessage)
+                            if (activeConversationId.value == conversationId) {
+                                chatSession.value = ChatSession(messages = (earlierMessages + userMessage).takeLast(MAX_VISIBLE_CHAT_MESSAGES), historySaveError = !userSaved)
+                            }
+                            val parsedCommand = commandParser.parse(recognition.value)
+                            val configuration = apiConfigurationRepository.configuration.first()
+                            val onlineChat = parsedCommand == ParsedCommand.Unknown && configuration.isConfigured
+                            if (onlineChat && activeConversationId.value == conversationId) chatSession.value = chatSession.value.copy(busy = true)
+                            val result = try {
+                                if (onlineChat) assistantChatService.respond(earlierMessages + userMessage)
+                                else commandProcessor.process(recognition.value)
+                            } catch (exception: CancellationException) { throw exception }
+                            catch (exception: Exception) { ServiceResult.Failure(FailureReason.IO_ERROR, exception) }
                             val externalHandoff = opensExternalActivity(recognition.value)
+                            val response = when (result) {
+                                is ServiceResult.Success -> result.value
+                                is ServiceResult.Failure -> result.reason.voiceMessage()
+                            }
+                            val assistantMessage = ChatMessage(UUID.randomUUID().toString(), ChatRole.ASSISTANT, response)
+                            val replySaved = saveHistoryMessage(conversationId, conversationTitle, assistantMessage)
+                            if (activeConversationId.value == conversationId) {
+                                chatSession.value = chatSession.value.copy(
+                                    messages = (chatSession.value.messages + assistantMessage).takeLast(MAX_VISIBLE_CHAT_MESSAGES),
+                                    busy = false,
+                                    historySaveError = chatSession.value.historySaveError || !replySaved,
+                                )
+                            }
                             if (result is ServiceResult.Failure) {
                                 onCommandResult(recognition.value, result)
                                 if (result.reason == FailureReason.PERMISSION_DENIED) break
                             }
-                            when (result) {
-                                is ServiceResult.Failure -> {
-                                    interaction.value = interaction.value.copy(
-                                        responseText = result.reason.voiceMessage(),
-                                    )
-                                }
-                                is ServiceResult.Success -> {
-                                    interaction.value = interaction.value.copy(responseText = result.value)
-                                    if (settings.voiceResponsesEnabled && !externalHandoff) {
-                                        speak(result.value, settings)
-                                    }
-                                }
-                            }
+                            interaction.value = interaction.value.copy(responseText = response)
+                            if (result is ServiceResult.Success && settings.voiceResponsesEnabled && !externalHandoff) speak(response, settings)
                             if (externalHandoff) break
                         }
                     }
@@ -256,6 +300,7 @@ class AssistantViewModel(
                 )
                 logger.error("Local voice interaction failed", exception)
             } finally {
+                if (chatSession.value.busy) chatSession.value = chatSession.value.copy(busy = false)
                 interaction.value = interaction.value.copy(sessionActive = false, speaking = false)
             }
         }
@@ -340,6 +385,7 @@ class AssistantViewModel(
     private data class ChatSession(
         val messages: List<ChatMessage> = emptyList(),
         val busy: Boolean = false,
+        val historySaveError: Boolean = false,
     )
 
     private companion object {
@@ -359,6 +405,7 @@ class AssistantViewModelFactory(private val container: AppContainer) : ViewModel
             textToSpeech = container.textToSpeechEngine,
             apiConfigurationRepository = container.assistantApiConfigurationRepository,
             assistantChatService = container.assistantChatService,
+            historyRepository = container.historyRepository,
             logger = container.appLogger,
         ) as T
     }
