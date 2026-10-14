@@ -49,10 +49,21 @@ jobs:
           chmod +x gradlew
           ./gradlew test assembleDebug --no-daemon --stacktrace
 
-      - name: Upload debug APK
+      - name: Prepare APK and source ZIP
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp app/build/outputs/apk/debug/app-debug.apk dist/zerogravity.apk
+          git archive --format=zip --prefix=ZeroGravity/ HEAD -o dist/Zerogravtyapp.zip
+          test -s dist/zerogravity.apk
+          test -s dist/Zerogravtyapp.zip
+
+      - name: Upload app files
         uses: actions/upload-artifact@v4
         with:
-          name: ZeroGravity-debug-APK
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: ZeroGravity-app-files
+          path: |
+            dist/zerogravity.apk
+            dist/Zerogravtyapp.zip
           if-no-files-found: error
           retention-days: 14
