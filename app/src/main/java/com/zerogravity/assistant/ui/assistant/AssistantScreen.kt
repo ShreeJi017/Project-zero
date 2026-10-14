@@ -26,6 +26,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -62,6 +63,8 @@ import com.zerogravity.assistant.ui.AssistantUiState
 import com.zerogravity.assistant.ui.AssistantActivity
 import com.zerogravity.assistant.ui.navigation.horizontalPageSwipe
 import com.zerogravity.assistant.ui.theme.ZeroGravityAccent
+import com.zerogravity.assistant.domain.model.ChatMessage
+import com.zerogravity.assistant.domain.model.ChatRole
 
 @Composable
 fun AssistantScreen(
@@ -75,6 +78,10 @@ fun AssistantScreen(
     var prompt by remember { mutableStateOf("") }
     var continuousMode by remember { mutableStateOf(false) }
     val keyboardController = LocalSoftwareKeyboardController.current
+    LaunchedEffect(state.speechInput) {
+        val recognized = state.speechInput as? com.zerogravity.assistant.domain.model.SpeechInputState.Recognized
+        if (recognized != null) prompt = recognized.text
+    }
 
     Column(
         modifier = Modifier
@@ -92,7 +99,11 @@ fun AssistantScreen(
             BrandWordmark()
             Spacer(Modifier.weight(1f))
             Text(
-                text = if (state.settingsError) "OFFLINE" else "LOCAL · PRIVATE",
+                text = when {
+                    state.settingsError -> "OFFLINE"
+                    state.apiConfiguration.isConfigured -> "ONLINE · API"
+                    else -> "LOCAL · PRIVATE"
+                },
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 letterSpacing = 1.2.sp,
@@ -136,10 +147,28 @@ fun AssistantScreen(
             loading = state.settings == null && !state.settingsError,
             error = state.settingsError,
             activity = state.activity,
+            chatBusy = state.chatBusy,
             speechInput = state.speechInput,
             responseText = state.responseText,
             voiceOutputError = state.voiceOutputError,
             modifier = Modifier.fillMaxWidth(),
+        )
+        ChatTranscript(
+            messages = state.chatMessages,
+            busy = state.chatBusy,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Text(
+            text = if (state.apiConfiguration.isConfigured) {
+                "AI provider configured. Messages and recent conversation turns are sent to its HTTPS endpoint when you ask a free-form question."
+            } else {
+                "Offline commands work without a network. AI chat is off until you configure an HTTPS provider in Settings."
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 10.dp),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.height(14.dp))
         Row(
@@ -179,7 +208,10 @@ fun AssistantScreen(
                         ),
                         keyboardActions = KeyboardActions(
                             onSend = {
-                                submitPrompt(prompt, onNotice, onCommand)
+                                if (!state.chatBusy) {
+                                    submitPrompt(prompt, onNotice, onCommand)
+                                    if (prompt.isNotBlank()) prompt = ""
+                                }
                                 keyboardController?.hide()
                             },
                         ),
@@ -187,9 +219,13 @@ fun AssistantScreen(
                 }
                 Button(
                     onClick = {
-                        submitPrompt(prompt, onNotice, onCommand)
+                        if (!state.chatBusy) {
+                            submitPrompt(prompt, onNotice, onCommand)
+                            if (prompt.isNotBlank()) prompt = ""
+                        }
                         keyboardController?.hide()
                     },
+                    enabled = !state.chatBusy,
                     modifier = Modifier
                         .size(48.dp)
                         .semantics { contentDescription = "Send message" },
@@ -197,7 +233,15 @@ fun AssistantScreen(
                     shape = CircleShape,
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
                 ) {
-                    Text("↑", fontSize = 23.sp, fontWeight = FontWeight.Medium)
+                    if (state.chatBusy) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(20.dp),
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.onPrimary,
+                        )
+                    } else {
+                        Text("↑", fontSize = 23.sp, fontWeight = FontWeight.Medium)
+                    }
                 }
             }
             OutlinedButton(
@@ -365,6 +409,7 @@ private fun ResponsePanel(
     loading: Boolean,
     error: Boolean,
     activity: AssistantActivity,
+    chatBusy: Boolean,
     speechInput: com.zerogravity.assistant.domain.model.SpeechInputState,
     responseText: String,
     voiceOutputError: Boolean,
@@ -391,6 +436,7 @@ private fun ResponsePanel(
                 Text(
                     text = when {
                         error -> "SETUP NEEDS ATTENTION"
+                        chatBusy -> "ZERO · CONNECTING"
                         activity == AssistantActivity.LISTENING -> "ZERO · LISTENING"
                         activity == AssistantActivity.PROCESSING -> "ZERO · PROCESSING"
                         activity == AssistantActivity.SPEAKING -> "ZERO · SPEAKING"
@@ -409,6 +455,7 @@ private fun ResponsePanel(
                 text = when {
                     loading -> "Preparing your local preferences…"
                     error -> "Your local preferences could not be loaded."
+                    chatBusy -> "Contacting your configured AI provider…"
                     activity == AssistantActivity.LISTENING -> "Listening for your voice…"
                     activity == AssistantActivity.PROCESSING -> "Processing on this device…"
                     activity == AssistantActivity.SPEAKING -> "Speaking a response…"
@@ -433,6 +480,7 @@ private fun ResponsePanel(
                 text = when {
                     loading -> "Just a moment."
                     error -> "Restart the app after checking available device storage."
+                    chatBusy -> "Your message is being sent securely over HTTPS."
                     activity == AssistantActivity.LISTENING -> "The microphone is active for this request."
                     activity == AssistantActivity.PROCESSING -> "No audio or transcript leaves this device."
                     activity == AssistantActivity.SPEAKING -> "Tap Stop to interrupt speech."
@@ -457,6 +505,74 @@ private fun ResponsePanel(
                     text = responseText,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurface,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ChatTranscript(
+    messages: List<ChatMessage>,
+    busy: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    if (messages.isEmpty() && !busy) return
+    Column(
+        modifier = modifier.padding(top = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        messages.takeLast(10).forEach { message ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = if (message.role == ChatRole.USER) {
+                    Arrangement.End
+                } else {
+                    Arrangement.Start
+                },
+            ) {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(0.88f),
+                    shape = RoundedCornerShape(16.dp),
+                    color = if (message.role == ChatRole.USER) {
+                        MaterialTheme.colorScheme.primaryContainer
+                    } else {
+                        MaterialTheme.colorScheme.surface
+                    },
+                    tonalElevation = 1.dp,
+                ) {
+                    Column(Modifier.padding(horizontal = 14.dp, vertical = 11.dp)) {
+                        Text(
+                            if (message.role == ChatRole.USER) "YOU" else "ZERO",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            letterSpacing = 1.sp,
+                        )
+                        Text(
+                            message.content,
+                            modifier = Modifier.padding(top = 3.dp),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
+                }
+            }
+        }
+        if (busy) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.Start,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(18.dp),
+                    strokeWidth = 2.dp,
+                )
+                Text(
+                    "Waiting for the provider…",
+                    modifier = Modifier.padding(start = 8.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }

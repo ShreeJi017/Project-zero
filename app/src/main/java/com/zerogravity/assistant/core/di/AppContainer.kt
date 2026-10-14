@@ -4,6 +4,7 @@ import android.content.Context
 import com.zerogravity.assistant.core.logging.AndroidAppLogger
 import com.zerogravity.assistant.core.permission.AndroidPermissionManager
 import com.zerogravity.assistant.data.preferences.DataStoreSettingsRepository
+import com.zerogravity.assistant.data.security.AndroidAssistantApiConfigurationRepository
 import com.zerogravity.assistant.domain.command.DeterministicCommandRouter
 import com.zerogravity.assistant.domain.model.AppPermission
 import com.zerogravity.assistant.domain.port.CapabilityProvider
@@ -15,6 +16,7 @@ import com.zerogravity.assistant.platform.command.AndroidLocalDeviceActions
 import com.zerogravity.assistant.platform.command.AndroidPhoneActionGateway
 import com.zerogravity.assistant.platform.command.AndroidShortcutRepository
 import com.zerogravity.assistant.platform.capability.DefaultCapabilityRegistry
+import com.zerogravity.assistant.platform.ai.OpenAiCompatibleChatService
 import com.zerogravity.assistant.platform.reminder.AndroidReminderRepository
 import com.zerogravity.assistant.platform.reminder.AndroidReminderScheduler
 import com.zerogravity.assistant.domain.port.SpeechToTextEngine
@@ -43,6 +45,9 @@ class AppContainer(
         AndroidOnDeviceSpeechRecognizer(appContext, permissionManager)
 
     val settingsRepository: SettingsRepository = DataStoreSettingsRepository(appContext)
+    val assistantApiConfigurationRepository =
+        AndroidAssistantApiConfigurationRepository(appContext)
+    val assistantChatService = OpenAiCompatibleChatService(assistantApiConfigurationRepository)
     val commandProcessor: LocalCommandProcessor = DeterministicCommandRouter(
         deviceActions = AndroidLocalDeviceActions(appContext),
         reminders = reminderRepository,

@@ -7,6 +7,9 @@ import com.zerogravity.assistant.core.di.AppContainer
 import com.zerogravity.assistant.core.logging.AppLogger
 import com.zerogravity.assistant.domain.command.CommandParser
 import com.zerogravity.assistant.domain.command.ParsedCommand
+import com.zerogravity.assistant.domain.model.AssistantApiConfiguration
+import com.zerogravity.assistant.domain.model.ChatMessage
+import com.zerogravity.assistant.domain.model.ChatRole
 import com.zerogravity.assistant.domain.model.AssistantSettings
 import com.zerogravity.assistant.domain.model.CapabilityInfo
 import com.zerogravity.assistant.domain.model.FailureReason
@@ -15,6 +18,8 @@ import com.zerogravity.assistant.domain.model.SpeechInputState
 import com.zerogravity.assistant.domain.model.VoiceConfiguration
 import com.zerogravity.assistant.domain.model.VoiceDescriptor
 import com.zerogravity.assistant.domain.port.CapabilityRegistry
+import com.zerogravity.assistant.domain.port.AssistantApiConfigurationRepository
+import com.zerogravity.assistant.domain.port.AssistantChatService
 import com.zerogravity.assistant.domain.port.LocalCommandProcessor
 import com.zerogravity.assistant.domain.port.SpeechToTextEngine
 import com.zerogravity.assistant.domain.port.SettingsRepository
@@ -28,8 +33,8 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.catch
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import java.util.UUID
 
 data class AssistantUiState(
     val capabilities: List<CapabilityInfo>,
@@ -41,6 +46,9 @@ data class AssistantUiState(
     val voiceSessionActive: Boolean = false,
     val voiceOutputError: Boolean = false,
     val installedVoices: List<VoiceDescriptor> = emptyList(),
+    val apiConfiguration: AssistantApiConfiguration = AssistantApiConfiguration(),
+    val chatMessages: List<ChatMessage> = emptyList(),
+    val chatBusy: Boolean = false,
 )
 
 enum class AssistantActivity {
@@ -56,11 +64,14 @@ class AssistantViewModel(
     private val commandProcessor: LocalCommandProcessor,
     private val speechToText: SpeechToTextEngine,
     private val textToSpeech: TextToSpeechEngine,
+    private val apiConfigurationRepository: AssistantApiConfigurationRepository,
+    private val assistantChatService: AssistantChatService,
     private val logger: AppLogger,
 ) : ViewModel() {
     private val commandParser = CommandParser()
     private val capabilities = MutableStateFlow(capabilityRegistry.all())
     private val interaction = MutableStateFlow(VoiceInteraction())
+    private val chatSession = MutableStateFlow(ChatSession())
 
     val uiState = combine(
         settingsRepository.settings,
@@ -87,6 +98,12 @@ class AssistantViewModel(
             installedVoices = voices,
         )
     }
+        .combine(apiConfigurationRepository.configuration) { state, configuration ->
+            state.copy(apiConfiguration = configuration)
+        }
+        .combine(chatSession) { state, session ->
+            state.copy(chatMessages = session.messages, chatBusy = session.busy)
+        }
         .catch { throwable ->
             if (throwable is CancellationException) throw throwable
             logger.error("Unable to load local settings", throwable)
@@ -106,22 +123,81 @@ class AssistantViewModel(
         settingsRepository.update(transform)
     }
 
+    suspend fun saveApiConfiguration(
+        endpoint: String,
+        model: String,
+        apiKey: String,
+    ) = apiConfigurationRepository.save(endpoint, model, apiKey)
+
+    suspend fun clearApiConfiguration() = apiConfigurationRepository.clear()
+
     fun submitText(command: String, onResult: (ServiceResult<String>) -> Unit) {
         viewModelScope.launch {
+            if (chatSession.value.busy) return@launch
             if (interaction.value.sessionActive) {
                 voiceJob?.cancel()
                 speechToText.cancel()
                 textToSpeech.stop()
                 interaction.value = interaction.value.copy(sessionActive = false, speaking = false)
             }
-            val result = commandProcessor.process(command)
-            onResult(result)
-            if (result is ServiceResult.Success) {
-                interaction.value = interaction.value.copy(responseText = result.value)
-                val settings = uiState.value.settings
-                if (settings?.voiceResponsesEnabled == true && !opensExternalActivity(command)) {
-                    speak(result.value, settings)
+            val userMessage = ChatMessage(
+                id = UUID.randomUUID().toString(),
+                role = ChatRole.USER,
+                content = command,
+            )
+            val earlierMessages = chatSession.value.messages
+            chatSession.value = ChatSession(
+                messages = (earlierMessages + userMessage).takeLast(MAX_VISIBLE_CHAT_MESSAGES),
+                busy = true,
+            )
+            val result = try {
+                val parsedCommand = commandParser.parse(command)
+                val configuration = apiConfigurationRepository.configuration.first()
+                if (parsedCommand == ParsedCommand.Unknown && configuration.isConfigured) {
+                    assistantChatService.respond(earlierMessages + userMessage)
+                } else {
+                    commandProcessor.process(command).let { localResult ->
+                        if (parsedCommand == ParsedCommand.Unknown &&
+                            localResult is ServiceResult.Success &&
+                            localResult.value.startsWith("I don't recognize")
+                        ) {
+                            ServiceResult.Success(
+                                "${localResult.value}\n\nOnline chat is not configured. Add an HTTPS provider and API key in Settings; no message was sent.",
+                            )
+                        } else {
+                            localResult
+                        }
+                    }
                 }
+            } catch (exception: CancellationException) {
+                chatSession.value = chatSession.value.copy(busy = false)
+                throw exception
+            } catch (exception: Exception) {
+                ServiceResult.Failure(FailureReason.IO_ERROR, exception)
+            }
+            onResult(result)
+            val reply = when (result) {
+                is ServiceResult.Success -> result.value
+                is ServiceResult.Failure -> result.reason.chatMessage()
+            }
+            chatSession.value = chatSession.value.copy(
+                messages = (chatSession.value.messages + ChatMessage(
+                    id = UUID.randomUUID().toString(),
+                    role = ChatRole.ASSISTANT,
+                    content = reply,
+                )).takeLast(MAX_VISIBLE_CHAT_MESSAGES),
+                busy = false,
+            )
+            interaction.value = interaction.value.copy(responseText = reply)
+            val settings = uiState.value.settings
+            if (result is ServiceResult.Success &&
+                settings?.voiceResponsesEnabled == true &&
+                !opensExternalActivity(command)
+            ) {
+                speak(reply, settings)
+            }
+            if (result is ServiceResult.Failure) {
+                result.cause?.let { logger.error("Assistant request did not complete", it) }
             }
         }
     }
@@ -243,12 +319,32 @@ class AssistantViewModel(
         FailureReason.IO_ERROR -> "Offline speech recognition failed. Try again."
     }
 
+    private fun FailureReason.chatMessage(): String = when (this) {
+        FailureReason.NOT_AVAILABLE ->
+            "The AI provider is not configured. Add an HTTPS endpoint, model, and API key in Settings."
+        FailureReason.INVALID_INPUT -> "The message or provider configuration is invalid."
+        FailureReason.IO_ERROR ->
+            "The provider request failed. Check your internet connection, endpoint, model, and API key."
+        FailureReason.PERMISSION_DENIED -> "The requested action was not permitted."
+        FailureReason.NO_SPEECH -> "No speech was recognized."
+        FailureReason.UNSUPPORTED_LANGUAGE -> "The selected language is not supported."
+    }
+
     private data class VoiceInteraction(
         val responseText: String = "",
         val sessionActive: Boolean = false,
         val speaking: Boolean = false,
         val voiceOutputError: Boolean = false,
     )
+
+    private data class ChatSession(
+        val messages: List<ChatMessage> = emptyList(),
+        val busy: Boolean = false,
+    )
+
+    private companion object {
+        const val MAX_VISIBLE_CHAT_MESSAGES = 40
+    }
 }
 
 class AssistantViewModelFactory(private val container: AppContainer) : ViewModelProvider.Factory {
@@ -261,6 +357,8 @@ class AssistantViewModelFactory(private val container: AppContainer) : ViewModel
             commandProcessor = container.commandProcessor,
             speechToText = container.speechToTextEngine,
             textToSpeech = container.textToSpeechEngine,
+            apiConfigurationRepository = container.assistantApiConfigurationRepository,
+            assistantChatService = container.assistantChatService,
             logger = container.appLogger,
         ) as T
     }

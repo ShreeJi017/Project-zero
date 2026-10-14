@@ -240,6 +240,49 @@ fun ZeroGravityApp(container: AppContainer) {
                         }
                     },
                     installedVoices = uiState.installedVoices,
+                    apiConfiguration = uiState.apiConfiguration,
+                    onSaveApiConfiguration = { endpoint, model, apiKey ->
+                        val result = assistantViewModel.saveApiConfiguration(endpoint, model, apiKey)
+                        scope.launch {
+                            snackbarHostState.showSnackbar(
+                                when (result) {
+                                    is ServiceResult.Success ->
+                                        if (apiKey.isBlank() && !uiState.apiConfiguration.hasApiKey) {
+                                            "Provider saved. Add an API key to enable online chat."
+                                        } else {
+                                            "Provider saved. The API key is encrypted on this device."
+                                        }
+                                    is ServiceResult.Failure -> {
+                                        if (result.cause != null) {
+                                            container.appLogger.error(
+                                                "Unable to save AI provider configuration",
+                                                result.cause,
+                                            )
+                                        }
+                                        when (result.reason) {
+                                            FailureReason.INVALID_INPUT ->
+                                                "Use a valid HTTPS base URL, model name, and API key."
+                                            else -> "Provider settings could not be saved."
+                                        }
+                                    }
+                                },
+                            )
+                        }
+                        result
+                    },
+                    onClearApiConfiguration = {
+                        val result = assistantViewModel.clearApiConfiguration()
+                        scope.launch {
+                            snackbarHostState.showSnackbar(
+                                if (result is ServiceResult.Success) {
+                                    "Provider settings and saved key removed."
+                                } else {
+                                    "Provider settings could not be removed."
+                                },
+                            )
+                        }
+                        result
+                    },
                     onInstallVoice = { languageTag ->
                         scope.launch {
                             when (val result = container.voicePackManager.requestOfflineVoice(languageTag)) {

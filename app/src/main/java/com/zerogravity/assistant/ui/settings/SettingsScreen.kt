@@ -15,6 +15,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -23,6 +24,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -35,13 +37,19 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.foundation.text.KeyboardOptions
 import com.zerogravity.assistant.domain.model.AppearanceMode
+import com.zerogravity.assistant.domain.model.AssistantApiConfiguration
 import com.zerogravity.assistant.domain.model.AppPermission
 import com.zerogravity.assistant.domain.model.AssistantCapability
 import com.zerogravity.assistant.domain.model.AssistantSettings
 import com.zerogravity.assistant.domain.model.CapabilityInfo
 import com.zerogravity.assistant.domain.model.CapabilityStatus
 import com.zerogravity.assistant.domain.model.VoiceDescriptor
+import com.zerogravity.assistant.domain.model.ServiceResult
 import com.zerogravity.assistant.ui.navigation.horizontalPageSwipe
 import kotlinx.coroutines.launch
 
@@ -57,6 +65,13 @@ fun SettingsScreen(
     onInstallVoice: (String) -> Unit = {},
     onRefreshVoices: () -> Unit = {},
     onOpenMicrophoneSettings: () -> Unit = {},
+    apiConfiguration: AssistantApiConfiguration = AssistantApiConfiguration(),
+    onSaveApiConfiguration: suspend (String, String, String) -> ServiceResult<Unit> = { _, _, _ ->
+        ServiceResult.Failure(com.zerogravity.assistant.domain.model.FailureReason.NOT_AVAILABLE)
+    },
+    onClearApiConfiguration: suspend () -> ServiceResult<Unit> = {
+        ServiceResult.Failure(com.zerogravity.assistant.domain.model.FailureReason.NOT_AVAILABLE)
+    },
     onSettingsChange: suspend (AssistantSettings.() -> AssistantSettings) -> Unit,
 ) {
     val scope = rememberCoroutineScope()
@@ -97,6 +112,102 @@ fun SettingsScreen(
                     )
                 }
             }
+        }
+        SettingsSection(
+            "AI CHAT",
+            "Optional OpenAI-compatible chat over HTTPS. Free-form messages and recent conversation context are sent to the configured provider.",
+        ) {
+            var endpoint by remember(apiConfiguration.endpoint) {
+                mutableStateOf(apiConfiguration.endpoint)
+            }
+            var model by remember(apiConfiguration.model) {
+                mutableStateOf(apiConfiguration.model.ifBlank { "gpt-4o-mini" })
+            }
+            var apiKey by remember { mutableStateOf("") }
+
+            Text(
+                if (apiConfiguration.isConfigured) {
+                    "Provider ready · API key encrypted with Android Keystore"
+                } else if (apiConfiguration.hasApiKey) {
+                    "Saved API key present · complete the endpoint and model configuration"
+                } else {
+                    "No API configured · offline commands remain available"
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = if (apiConfiguration.isConfigured) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+            )
+            OutlinedTextField(
+                value = endpoint,
+                onValueChange = { endpoint = it },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("HTTPS API base URL") },
+                supportingText = { Text("Example: https://api.openai.com/v1") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Uri,
+                    imeAction = ImeAction.Next,
+                ),
+            )
+            OutlinedTextField(
+                value = model,
+                onValueChange = { model = it },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("Model name") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+            )
+            OutlinedTextField(
+                value = apiKey,
+                onValueChange = { apiKey = it },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text(if (apiConfiguration.hasApiKey) "Replace API key (optional)" else "API key") },
+                supportingText = {
+                    Text("Leave blank to keep the currently saved key. The key is never displayed after saving.")
+                },
+                singleLine = true,
+                visualTransformation = PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Password,
+                    imeAction = ImeAction.Done,
+                ),
+            )
+            OutlinedButton(
+                onClick = {
+                    scope.launch {
+                        when (onSaveApiConfiguration(endpoint, model, apiKey)) {
+                            is ServiceResult.Success -> apiKey = ""
+                            is ServiceResult.Failure -> Unit
+                        }
+                    }
+                },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Save provider")
+            }
+            if (apiConfiguration.hasApiKey || apiConfiguration.model.isNotBlank()) {
+                OutlinedButton(
+                    onClick = {
+                        scope.launch {
+                            when (onClearApiConfiguration()) {
+                                is ServiceResult.Success -> apiKey = ""
+                                is ServiceResult.Failure -> Unit
+                            }
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("Remove provider and saved key")
+                }
+            }
+            Text(
+                "Only free-form questions use this provider. Device commands stay local. Provider terms and data handling apply to anything you send.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
         SettingsSection(
             "VOICE",
