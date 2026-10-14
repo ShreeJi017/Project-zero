@@ -1,0 +1,17 @@
+<resources>
+    <style name="Theme.ZeroGravity" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:colorAccent">#B8C7FF</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowActionModeOverlay">true</item>
+        <item name="android:windowBackground">@color/zero_black</item>
+    </style>
+
+    <style name="Theme.ZeroGravity.Splash" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/zero_black</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/ic_zero_mark</item>
+        <item name="postSplashScreenTheme">@style/Theme.ZeroGravity</item>
+    </style>
+</resources>
