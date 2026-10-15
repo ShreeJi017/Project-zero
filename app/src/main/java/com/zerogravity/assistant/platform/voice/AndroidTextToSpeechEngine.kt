@@ -259,11 +259,10 @@ class AndroidTextToSpeechEngine(context: Context) : TextToSpeechEngine, VoicePac
         } else if (!notificationManager.isNotificationPolicyAccessGranted) {
             false
         } else {
-            notificationManager.currentInterruptionFilter == NotificationManager.INTERRUPTION_FILTER_NONE ||
-                notificationManager.currentInterruptionFilter == NotificationManager.INTERRUPTION_FILTER_PRIORITY
+            notificationManager.currentInterruptionFilter == NotificationManager.INTERRUPTION_FILTER_NONE
         }
     } catch (_: SecurityException) {
-        true
+        false
     }
 
     private companion object {

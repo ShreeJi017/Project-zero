@@ -79,9 +79,9 @@ fun AssistantScreen(
     var prompt by remember { mutableStateOf("") }
     var continuousMode by remember { mutableStateOf(false) }
     val keyboardController = LocalSoftwareKeyboardController.current
-    LaunchedEffect(state.speechInput) {
+    LaunchedEffect(state.speechInput, state.settings?.wakeWordEnabled) {
         val recognized = state.speechInput as? com.zerogravity.assistant.domain.model.SpeechInputState.Recognized
-        if (recognized != null) prompt = recognized.text
+        if (recognized != null && state.settings?.wakeWordEnabled != true) prompt = recognized.text
     }
 
     Column(
@@ -152,6 +152,7 @@ fun AssistantScreen(
             speechInput = state.speechInput,
             responseText = state.responseText,
             voiceOutputError = state.voiceOutputError,
+            wakePhraseEnabled = state.settings?.wakeWordEnabled == true,
             modifier = Modifier.fillMaxWidth(),
         )
         ChatTranscript(
@@ -263,6 +264,8 @@ fun AssistantScreen(
                     .semantics {
                         contentDescription = if (state.voiceSessionActive) {
                             "Stop voice session"
+                        } else if (state.settings?.wakeWordEnabled == true) {
+                            "Start foreground wake phrase listening"
                         } else {
                             "Start offline voice input"
                         }
@@ -286,7 +289,11 @@ fun AssistantScreen(
                 .padding(top = 8.dp),
         )
         Text(
-            text = "Microphone is used only after you tap. Speech is processed by an installed on-device recognizer; no online fallback is used.",
+            text = if (state.settings?.wakeWordEnabled == true) {
+                "Tap MIC to listen for “Hey Zero”, “OK Zero”, or “Shree” while the app is open; tap STOP to end. Offline language pack required."
+            } else {
+                "Microphone is used only after you tap. Speech is processed by an installed on-device recognizer; no online fallback is used."
+            },
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(top = 9.dp, bottom = 12.dp),
@@ -427,6 +434,7 @@ private fun ResponsePanel(
     speechInput: com.zerogravity.assistant.domain.model.SpeechInputState,
     responseText: String,
     voiceOutputError: Boolean,
+    wakePhraseEnabled: Boolean,
     modifier: Modifier = Modifier,
 ) {
     Surface(
@@ -451,6 +459,7 @@ private fun ResponsePanel(
                     text = when {
                         error -> "SETUP NEEDS ATTENTION"
                         chatBusy -> "ZERO · CONNECTING"
+                        activity == AssistantActivity.LISTENING && wakePhraseEnabled -> "ZERO · WAKE PHRASE"
                         activity == AssistantActivity.LISTENING -> "ZERO · LISTENING"
                         activity == AssistantActivity.PROCESSING -> "ZERO · PROCESSING"
                         activity == AssistantActivity.SPEAKING -> "ZERO · SPEAKING"
@@ -470,6 +479,7 @@ private fun ResponsePanel(
                     loading -> "Preparing your local preferences…"
                     error -> "Your local preferences could not be loaded."
                     chatBusy -> "Contacting your configured AI provider…"
+                    activity == AssistantActivity.LISTENING && wakePhraseEnabled -> "Listening for “Hey Zero”, “OK Zero”, or “Shree”… tap STOP to finish."
                     activity == AssistantActivity.LISTENING -> "Listening for your voice…"
                     activity == AssistantActivity.PROCESSING -> "Processing on this device…"
                     activity == AssistantActivity.SPEAKING -> "Speaking a response…"
@@ -483,7 +493,7 @@ private fun ResponsePanel(
                         } else {
                             "Offline speech recognition could not complete."
                         }
-                    voiceOutputError -> "The response is shown here, but offline speech output is unavailable."
+                    voiceOutputError -> "The response is shown here, but offline speech output failed. In Settings, install/check an offline voice and use Test offline voice."
                     else -> "Ready for offline commands."
                 },
                 style = MaterialTheme.typography.titleSmall,

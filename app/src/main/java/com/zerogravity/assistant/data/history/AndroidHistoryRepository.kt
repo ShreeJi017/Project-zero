@@ -78,7 +78,7 @@ class AndroidHistoryRepository(
                 database.insertOrThrow(TABLE_MESSAGES, null, savedMessage)
                 database.execSQL(
                     "UPDATE $TABLE_CONVERSATIONS SET updated_at = ?, preview = ? WHERE id = ?",
-                    arrayOf(now, message.content.trim().take(MAX_PREVIEW_LENGTH), conversationId),
+                    arrayOf<Any>(now, message.content.trim().take(MAX_PREVIEW_LENGTH), conversationId),
                 )
                 database.setTransactionSuccessful()
             } finally {

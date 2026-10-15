@@ -44,10 +44,10 @@ jobs:
 
           "$SDKMANAGER" --install "platform-tools" "platforms;android-36" "build-tools;36.0.0"
 
-      - name: Run unit tests and build debug APK
+      - name: Run tests, lint and assemble debug APKs
         run: |
           chmod +x gradlew
-          ./gradlew test assembleDebug --no-daemon --stacktrace
+          ./gradlew test lintDebug assembleDebug assembleDebugAndroidTest --no-daemon --stacktrace
 
       - name: Prepare APK and source ZIP
         run: |

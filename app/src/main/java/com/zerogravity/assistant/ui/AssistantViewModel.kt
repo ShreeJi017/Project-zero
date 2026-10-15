@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.zerogravity.assistant.core.di.AppContainer
 import com.zerogravity.assistant.core.logging.AppLogger
 import com.zerogravity.assistant.domain.command.CommandParser
+import com.zerogravity.assistant.domain.command.WakePhraseParser
 import com.zerogravity.assistant.domain.command.ParsedCommand
 import com.zerogravity.assistant.domain.model.AssistantApiConfiguration
 import com.zerogravity.assistant.domain.model.ChatMessage
@@ -30,6 +31,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.SharingStarted
@@ -93,6 +95,7 @@ class AssistantViewModel(
                 speechInput is SpeechInputState.Processing ||
                     speechInput is SpeechInputState.Recognized && currentInteraction.sessionActive ->
                     AssistantActivity.PROCESSING
+                currentInteraction.sessionActive -> AssistantActivity.LISTENING
                 else -> AssistantActivity.IDLE
             },
             speechInput = speechInput,
@@ -138,6 +141,38 @@ class AssistantViewModel(
     ) = apiConfigurationRepository.save(endpoint, model, apiKey)
 
     suspend fun clearApiConfiguration() = apiConfigurationRepository.clear()
+
+    suspend fun testOfflineVoice(): ServiceResult<Unit> {
+        val settings = uiState.value.settings ?: settingsRepository.settings.first()
+        interaction.value = interaction.value.copy(
+            speaking = true,
+            voiceOutputError = false,
+            responseText = "Testing the installed offline voice…",
+        )
+        val result = try {
+            when (val configured = textToSpeech.configure(
+                VoiceConfiguration(settings.voiceLanguageTag, settings.voiceName, settings.speechRate),
+            )) {
+                is ServiceResult.Failure -> configured
+                is ServiceResult.Success -> textToSpeech.speak("This is a test of your offline voice.")
+            }
+        } catch (exception: CancellationException) {
+            interaction.value = interaction.value.copy(speaking = false)
+            throw exception
+        } catch (exception: Exception) {
+            ServiceResult.Failure(FailureReason.IO_ERROR, exception)
+        }
+        interaction.value = interaction.value.copy(
+            speaking = false,
+            voiceOutputError = result is ServiceResult.Failure,
+            responseText = when (result) {
+                is ServiceResult.Success -> "Offline voice test completed."
+                is ServiceResult.Failure -> "Offline voice test failed: ${result.reason}."
+            },
+        )
+        if (result is ServiceResult.Failure) result.cause?.let { logger.error("Offline voice test failed", it) }
+        return result
+    }
 
     fun submitText(command: String, onResult: (ServiceResult<String>) -> Unit) {
         viewModelScope.launch {
@@ -235,40 +270,76 @@ class AssistantViewModel(
         if (interaction.value.sessionActive) return
         interaction.value = interaction.value.copy(sessionActive = true, voiceOutputError = false)
         voiceJob = viewModelScope.launch {
+            var wakePhraseMode = uiState.value.settings?.wakeWordEnabled == true
             try {
+                val initialSettings = uiState.value.settings ?: settingsRepository.settings.first()
+                wakePhraseMode = initialSettings.wakeWordEnabled
+                if (wakePhraseMode) {
+                    interaction.value = interaction.value.copy(
+                        responseText = "Listening for ‘Hey Zero’, ‘OK Zero’, or ‘Shree’. Tap STOP to finish.",
+                    )
+                }
                 textToSpeech.stop()
                 do {
                     val settings = uiState.value.settings ?: settingsRepository.settings.first()
                     val recognition = speechToText.recognizeOnce(settings.voiceLanguageTag)
                     when (recognition) {
                         is ServiceResult.Failure -> {
+                            if (wakePhraseMode && recognition.reason == FailureReason.NO_SPEECH) {
+                                interaction.value = interaction.value.copy(
+                                    responseText = "Listening for ‘Hey Zero’, ‘OK Zero’, or ‘Shree’. Tap STOP to finish.",
+                                )
+                                delay(WAKE_RESTART_DELAY_MILLIS)
+                                continue
+                            }
                             interaction.value = interaction.value.copy(
                                 responseText = recognition.reason.voiceMessage(),
                             )
                             break
                         }
                         is ServiceResult.Success -> {
-                            interaction.value = interaction.value.copy(
-                                responseText = "Heard: ${recognition.value}",
-                            )
+                            val command = if (wakePhraseMode) {
+                                WakePhraseParser.commandAfterWakePhrase(recognition.value)
+                            } else {
+                                recognition.value.trim()
+                            }
+                            if (wakePhraseMode && command == null) {
+                                speechToText.cancel()
+                                interaction.value = interaction.value.copy(
+                                    responseText = "Waiting for ‘Hey Zero’, ‘OK Zero’, or ‘Shree’…",
+                                )
+                                delay(WAKE_RESTART_DELAY_MILLIS)
+                                continue
+                            }
+                            val request = command.orEmpty()
+                            if (wakePhraseMode && request.isBlank()) {
+                                speechToText.cancel()
+                                interaction.value = interaction.value.copy(
+                                    responseText = "Wake phrase heard. Say a command now.",
+                                )
+                                if (settings.voiceResponsesEnabled) speak("I'm listening.", settings)
+                                delay(WAKE_RESTART_DELAY_MILLIS)
+                                continue
+                            }
+                            interaction.value = interaction.value.copy(responseText = "Heard: " + request)
                             val conversationId = activeConversationId.value
                             val earlierMessages = chatSession.value.messages
-                            val conversationTitle = earlierMessages.firstOrNull { it.role == ChatRole.USER }?.content ?: recognition.value
-                            val userMessage = ChatMessage(UUID.randomUUID().toString(), ChatRole.USER, recognition.value)
+                            val conversationTitle = earlierMessages.firstOrNull { it.role == ChatRole.USER }?.content ?: request
+                            val userMessage = ChatMessage(UUID.randomUUID().toString(), ChatRole.USER, request)
                             val userSaved = saveHistoryMessage(conversationId, conversationTitle, userMessage)
                             if (activeConversationId.value == conversationId) {
                                 chatSession.value = ChatSession(messages = (earlierMessages + userMessage).takeLast(MAX_VISIBLE_CHAT_MESSAGES), historySaveError = !userSaved)
                             }
-                            val parsedCommand = commandParser.parse(recognition.value)
+                            val parsedCommand = commandParser.parse(request)
                             val configuration = apiConfigurationRepository.configuration.first()
                             val onlineChat = parsedCommand == ParsedCommand.Unknown && configuration.isConfigured
                             if (onlineChat && activeConversationId.value == conversationId) chatSession.value = chatSession.value.copy(busy = true)
                             val result = try {
                                 if (onlineChat) assistantChatService.respond(earlierMessages + userMessage)
-                                else commandProcessor.process(recognition.value)
+                                else commandProcessor.process(request)
                             } catch (exception: CancellationException) { throw exception }
                             catch (exception: Exception) { ServiceResult.Failure(FailureReason.IO_ERROR, exception) }
-                            val externalHandoff = opensExternalActivity(recognition.value)
+                            val externalHandoff = opensExternalActivity(request)
                             val response = when (result) {
                                 is ServiceResult.Success -> result.value
                                 is ServiceResult.Failure -> result.reason.voiceMessage()
@@ -283,7 +354,7 @@ class AssistantViewModel(
                                 )
                             }
                             if (result is ServiceResult.Failure) {
-                                onCommandResult(recognition.value, result)
+                                onCommandResult(request, result)
                                 if (result.reason == FailureReason.PERMISSION_DENIED) break
                             }
                             interaction.value = interaction.value.copy(responseText = response)
@@ -291,7 +362,7 @@ class AssistantViewModel(
                             if (externalHandoff) break
                         }
                     }
-                } while (continuous && isActive)
+                } while ((continuous || wakePhraseMode) && isActive)
             } catch (exception: CancellationException) {
                 throw exception
             } catch (exception: Exception) {
@@ -390,6 +461,7 @@ class AssistantViewModel(
 
     private companion object {
         const val MAX_VISIBLE_CHAT_MESSAGES = 40
+        const val WAKE_RESTART_DELAY_MILLIS = 350L
     }
 }
 

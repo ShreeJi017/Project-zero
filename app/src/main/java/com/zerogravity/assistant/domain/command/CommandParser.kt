@@ -37,8 +37,7 @@ class CommandParser {
         ) {
             return ParsedCommand.BatteryStatus
         }
-        if (text in TORCH_ON_PHRASES) return ParsedCommand.SetTorch(true)
-        if (text in TORCH_OFF_PHRASES) return ParsedCommand.SetTorch(false)
+        parseTorch(text)?.let { return it }
         val originalText = input.trim()
         CALL_COMMAND.matchEntire(originalText)?.let { match ->
             return normalizedPhoneNumber(match.groupValues[1])?.let(ParsedCommand::PlaceCall)
@@ -61,6 +60,12 @@ class CommandParser {
         parseReminder(text)?.let { return it }
         parseOpenApp(text)?.let { return it }
         return ParsedCommand.Unknown
+    }
+
+    private fun parseTorch(text: String): ParsedCommand.SetTorch? = when {
+        text in TORCH_ON_PHRASES || TORCH_ON_PATTERNS.any { it.matches(text) } -> ParsedCommand.SetTorch(true)
+        text in TORCH_OFF_PHRASES || TORCH_OFF_PATTERNS.any { it.matches(text) } -> ParsedCommand.SetTorch(false)
+        else -> null
     }
 
     private fun parseOpenApp(text: String): ParsedCommand.OpenApp? {
@@ -179,6 +184,14 @@ class CommandParser {
             "turn off torch", "torch off", "flashlight off", "turn off flashlight",
             "torch band karo", "टॉर्च बंद करो", "फ्लैशलाइट बंद करो",
             "torch off kar do", "torch band kar do", "flashlight off kar do",
+        )
+        val TORCH_ON_PATTERNS = listOf(
+            Regex("^(?:please\\s+)?(?:(?:turn|switch)\\s+(?:(?:the|my)\\s+)?(?:torch|flashlight|flash\\s+light)\\s+on|(?:turn|switch)\\s+on\\s+(?:(?:the|my)\\s+)?(?:torch|flashlight|flash\\s+light)|(?:torch|flashlight|flash\\s+light)\\s+on)(?:\\s+please)?$"),
+            Regex("^(?:please\\s+)?(?:torch|flashlight|flash\\s+light)\\s+(?:chalao|jalao|chalu\\s+(?:karo|kar\\s+do)|on\\s+kar\\s+do|चालू(?:\\s+करो)?|जलाओ)$"),
+        )
+        val TORCH_OFF_PATTERNS = listOf(
+            Regex("^(?:please\\s+)?(?:(?:turn|switch)\\s+(?:(?:the|my)\\s+)?(?:torch|flashlight|flash\\s+light)\\s+off|(?:turn|switch)\\s+off\\s+(?:(?:the|my)\\s+)?(?:torch|flashlight|flash\\s+light)|(?:torch|flashlight|flash\\s+light)\\s+off|(?:torch|flashlight|flash\\s+light)\\s+bandh?(?:\\s+(?:karo|kar\\s+do))?)(?:\\s+please)?$"),
+            Regex("^(?:please\\s+)?(?:टॉर्च|फ्लैशलाइट)\\s+(?:बंद|ऑफ)(?:\\s+करो|\\s+कर\\s+दो)?$"),
         )
     }
 }

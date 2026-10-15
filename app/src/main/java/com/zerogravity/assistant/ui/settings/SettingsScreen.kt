@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
@@ -64,6 +65,7 @@ fun SettingsScreen(
     installedVoices: List<VoiceDescriptor> = emptyList(),
     onInstallVoice: (String) -> Unit = {},
     onRefreshVoices: () -> Unit = {},
+    onTestVoice: () -> Unit = {},
     onOpenMicrophoneSettings: () -> Unit = {},
     apiConfiguration: AssistantApiConfiguration = AssistantApiConfiguration(),
     onSaveApiConfiguration: suspend (String, String, String) -> ServiceResult<Unit> = { _, _, _ ->
@@ -289,6 +291,9 @@ fun SettingsScreen(
                 steps = 14,
             )
             Text("Speech rate: ${"%.1f".format(speechRate)}×", style = MaterialTheme.typography.bodySmall)
+            OutlinedButton(onClick = onTestVoice, modifier = Modifier.fillMaxWidth()) {
+                Text("Test offline voice")
+            }
             if (offlineVoices.isEmpty()) {
                 OutlinedButton(onClick = { onInstallVoice(settings.voiceLanguageTag) }) {
                     Text("Open Android offline voice installer")
@@ -300,12 +305,15 @@ fun SettingsScreen(
         }
         SettingsSection(
             "WAKE WORD",
-            "Background listening is not implemented. “Hey Zero”, “OK Zero”, and “Shree” are not supported; the microphone runs only after you tap it.",
+            "Wake-phrase listening is available only after you tap MIC and only while the app is in the foreground.",
         ) {
-            Text(
-                "No always-listening recognizer or microphone foreground service is running. This avoids pretending to detect wake phrases and avoids hidden background recording.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            SettingsSwitch(
+                title = "Enable in-app wake phrases",
+                description = "After tapping MIC, listen for “Hey Zero”, “OK Zero”, or “Shree”. Tap STOP to finish; no background microphone runs.",
+                checked = settings.wakeWordEnabled,
+                onCheckedChange = { enabled ->
+                    scope.launch { onSettingsChange { copy(wakeWordEnabled = enabled) } }
+                },
             )
         }
         SettingsSection("DOWNLOADS", "No third-party voice packs are bundled in the APK.") {
@@ -497,7 +505,7 @@ private fun SettingsSwitch(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .height(64.dp)
+            .heightIn(min = 64.dp)
             .toggleable(
                 value = checked,
                 role = Role.Switch,

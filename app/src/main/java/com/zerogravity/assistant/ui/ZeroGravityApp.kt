@@ -21,6 +21,7 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -75,6 +76,9 @@ fun ZeroGravityApp(container: AppContainer) {
     val uiState = assistantViewModel.uiState.collectAsStateWithLifecycle().value
     val backStackEntry = navController.currentBackStackEntryAsState().value
     val currentRoute = backStackEntry?.destination?.route
+    LaunchedEffect(currentRoute) {
+        if (currentRoute != Destination.HOME.route) assistantViewModel.stopVoice()
+    }
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     var pendingContinuousVoice by remember { androidx.compose.runtime.mutableStateOf(false) }
@@ -317,6 +321,22 @@ fun ZeroGravityApp(container: AppContainer) {
                                 )
                                 is ServiceResult.Failure -> snackbarHostState.showSnackbar(
                                     "Could not inspect system voices: ${refreshed.reason}.",
+                                )
+                            }
+                        }
+                    },
+                    onTestVoice = {
+                        scope.launch {
+                            when (val result = assistantViewModel.testOfflineVoice()) {
+                                is ServiceResult.Success -> snackbarHostState.showSnackbar(
+                                    "Offline voice test completed. If you heard nothing, check media volume and Android text-to-speech settings.",
+                                )
+                                is ServiceResult.Failure -> snackbarHostState.showSnackbar(
+                                    when (result.reason) {
+                                        FailureReason.NOT_AVAILABLE, FailureReason.UNSUPPORTED_LANGUAGE ->
+                                            "No compatible offline voice is ready. Install or select an offline voice in Settings."
+                                        else -> "Offline voice test failed: ${result.reason}."
+                                    },
                                 )
                             }
                         }

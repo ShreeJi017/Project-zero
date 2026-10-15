@@ -2,6 +2,7 @@ package com.zerogravity.assistant.domain.command
 
 import com.zerogravity.assistant.domain.port.SupportedApp
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 class CommandParserTest {
@@ -15,6 +16,26 @@ class CommandParserTest {
         assertEquals(ParsedCommand.BatteryStatus, parser.parse("charge kitna"))
         assertEquals(ParsedCommand.SetTorch(true), parser.parse("टॉर्च चालू करो"))
         assertEquals(ParsedCommand.SetTorch(false), parser.parse("torch band karo"))
+    }
+
+    @Test
+    fun parsesNaturalFlashlightPhrasesForVoiceInput() {
+        assertEquals(ParsedCommand.SetTorch(true), parser.parse("Please turn my flashlight on"))
+        assertEquals(ParsedCommand.SetTorch(true), parser.parse("switch on the torch"))
+        assertEquals(ParsedCommand.SetTorch(true), parser.parse("torch chalu kar do"))
+        assertEquals(ParsedCommand.SetTorch(false), parser.parse("turn the flashlight off"))
+        assertEquals(ParsedCommand.SetTorch(false), parser.parse("torch bandh kar do"))
+        assertEquals(ParsedCommand.Unknown, parser.parse("turn the room light on"))
+    }
+
+    @Test
+    fun extractsOnlyExplicitSupportedWakePhrases() {
+        assertEquals("turn on flashlight", WakePhraseParser.commandAfterWakePhrase("Hey Zero, turn on flashlight"))
+        assertEquals("battery status", WakePhraseParser.commandAfterWakePhrase("OK Zero battery status"))
+        assertEquals("time", WakePhraseParser.commandAfterWakePhrase("Shree! time"))
+        assertEquals("", WakePhraseParser.commandAfterWakePhrase("Okay Zero"))
+        assertNull(WakePhraseParser.commandAfterWakePhrase("turn on flashlight"))
+        assertNull(WakePhraseParser.commandAfterWakePhrase("Shreeji turn on flashlight"))
     }
 
     @Test
